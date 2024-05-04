@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 
-	"cafebean.xyz/cafeshort/v2/url_storer"
+	"cafebean.xyz/cafeshort/v2/urlrepo"
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,19 +21,22 @@ type ResponseStructure struct {
 
 func main() {
 	r := gin.Default()
-	store := url_storer.NewInMemoryURLStorer()
+	var store urlrepo.URLRepository = urlrepo.NewInMemoryURLRepository()
 	r.GET("/:id", func(ctx *gin.Context) {
 		shortId, ok := ctx.Params.Get("id")
 		if !ok || len(shortId) == 0 {
 			ctx.JSON(http.StatusBadRequest, ResponseStructure{StatusCode: http.StatusBadRequest, Message: "No ID specified in URI"})
 			return
 		}
-		longUrl, err := store.Query(shortId)
+		longUrl, err := store.GetUrlById(shortId)
 		if err != nil {
-			ctx.JSON(http.StatusInternalServerError, ResponseStructure{
-				StatusCode: http.StatusInternalServerError,
-				Message:    "Something went wrong inside",
-			})
+			switch {
+			case errors.Is(err, urlrepo.ErrUrlNotExists):
+				ctx.String(http.StatusNotFound, "No URL found for id")
+			default:
+				ctx.AbortWithStatus(http.StatusInternalServerError)
+			}
+			log.Println(err)
 			return
 		}
 		ctx.Redirect(http.StatusSeeOther, longUrl)
@@ -39,7 +44,7 @@ func main() {
 	r.POST("/create", func(ctx *gin.Context) {
 		// get url from form data
 		longUrl := ctx.Request.FormValue("url")
-		urlRegex, err := regexp.Compile("http[s]*://([a-z]*|[A-Z]*|\\.*)(/(.)*)*")
+		urlRegex, err := regexp.Compile(`http[s]*://([a-z]*|[A-Z]*|\\.*)(/(.)*)*`)
 		if err != nil {
 			fmt.Println("Error compiling regex: ", err)
 			ctx.JSON(http.StatusInternalServerError, ResponseStructure{
@@ -57,7 +62,7 @@ func main() {
 			return
 		}
 		// store the url
-		shortId, err := store.Store(longUrl)
+		shortId, err := store.AddUrl(longUrl)
 		if err != nil {
 			fmt.Println("Error storing URL: ", err)
 			ctx.JSON(http.StatusInternalServerError, ResponseStructure{StatusCode: http.StatusInternalServerError, Message: "Something went wrong inside"})
@@ -66,7 +71,6 @@ func main() {
 		// return the short url in plaintext
 		shortUrl := fmt.Sprintf("%s://%s/%s", SCHEME, HOST, shortId)
 		ctx.String(http.StatusCreated, shortUrl)
-		return
 	})
 	r.Run()
 }
